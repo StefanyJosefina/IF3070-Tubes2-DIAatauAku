@@ -7,17 +7,27 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 
 
 class KNN(BaseEstimator, ClassifierMixin):
-    """Skeleton KNN estimator.
+    """Skeleton KNN estimator (from scratch).
 
     TODOs:
     - Store training data in `fit`.
-    - Compute pairwise distances in `kneighbors`.
+    - Compute pairwise distances using p-norm in `kneighbors`.
     - Implement `predict` using majority / weighted vote.
     - Implement `predict_proba` that returns class probabilities.
     - Optionally implement `score` as accuracy.
+    
+    Hyperparameters for tuning:
+    - n_neighbors: [3, 5, 7, 9, 11]
+    - weights: ['uniform', 'distance']
+    - p: [1, 2] (manhattan, euclidean; Minkowski distance)
     """
 
-    def __init__(self, n_neighbors: int = 5, weights: str = "uniform", p: int = 2):
+    def __init__(
+        self,
+        n_neighbors: int = 5,
+        weights: str = "uniform",
+        p: int = 2,
+    ):
         # TODO: validate and store hyperparameters
         self.n_neighbors = int(n_neighbors)
         self.weights = weights
