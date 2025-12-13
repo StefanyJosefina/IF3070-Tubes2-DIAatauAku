@@ -14,8 +14,7 @@ class _Node:
     is_categorical: bool = False  
     left: Optional[Any] = None
     right: Optional[Any] = None
-    value: Optional[np.ndarray] = None
-    n_samples: int = 0
+    value: Optional[np.ndarray] = None 
 
 
 class DTL(BaseEstimator, ClassifierMixin):
@@ -30,8 +29,6 @@ class DTL(BaseEstimator, ClassifierMixin):
         max_features: Optional[str] = None,
         random_state: Optional[int] = None,
         max_thresholds: int = 256,
-        class_weight: Optional[dict] = None,
-        min_impurity_decrease: float = 0.0,
     ):
         self.max_depth = None if max_depth is None else int(max_depth)
         self.min_samples_split = int(min_samples_split)
@@ -41,15 +38,9 @@ class DTL(BaseEstimator, ClassifierMixin):
         self.max_features = max_features
         self.random_state = random_state
         self.max_thresholds = max_thresholds
-        self.class_weight = class_weight
-        self.min_impurity_decrease = min_impurity_decrease
-        self._feature_types = None
-        self.feature_importances_ = None
+        self._feature_types = None 
 
     def fit(self, X, y):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-            
         if hasattr(X, 'to_numpy'):
             X_array = X.to_numpy()
             self._feature_types = {}
@@ -78,78 +69,34 @@ class DTL(BaseEstimator, ClassifierMixin):
         
         y_encoded = np.searchsorted(self.classes_, y)
         
-        # Compute class weights - FIXED VERSION
-        self._compute_class_weights(y_encoded)
-        
-        # Compute sample weights for each sample based on its class
-        self.sample_weights_ = np.ones(len(y_encoded))
-        for i, class_idx in enumerate(y_encoded):
-            self.sample_weights_[i] = self.class_weights_[class_idx]
-        
-        # Initialize feature importances
-        self.feature_importances_ = np.zeros(X_array.shape[1])
-        
-        self._tree = self._build_tree(X_array, y_encoded, self.sample_weights_, depth=0)
-        
-        # Normalize feature importances
-        if self.feature_importances_.sum() > 0:
-            self.feature_importances_ /= self.feature_importances_.sum()
-            
+        self._tree = self._build_tree(X_array, y_encoded, depth=0)
         return self
 
-    def _compute_class_weights(self, y: np.ndarray):
-        """Compute class weights for cost-sensitive learning"""
-        if self.class_weight == "balanced":
-            n_samples = len(y)
-            counts = np.bincount(y, minlength=self.n_classes_)
-            # Standard balanced formula
-            self.class_weights_ = n_samples / (self.n_classes_ * counts)
-        elif isinstance(self.class_weight, dict):
-            self.class_weights_ = np.array([
-                self.class_weight.get(self.classes_[i], 1.0) 
-                for i in range(self.n_classes_)
-            ])
-        else:
-            self.class_weights_ = np.ones(self.n_classes_)
-
-    def _weighted_impurity(self, y: np.ndarray, sample_weights: np.ndarray) -> float:
-        """Calculate weighted impurity - FIXED VERSION"""
+    def _impurity(self, y: np.ndarray) -> float:
         if y.size == 0:
             return 0.0
         
-        # Count samples per class, weighted
-        weighted_counts = np.zeros(self.n_classes_)
-        for class_idx in range(self.n_classes_):
-            mask = (y == class_idx)
-            weighted_counts[class_idx] = sample_weights[mask].sum()
-        
-        total_weight = weighted_counts.sum()
-        if total_weight == 0:
-            return 0.0
-        
-        # Calculate probabilities
-        probs = weighted_counts / total_weight
+        counts = np.bincount(y, minlength=self.n_classes_).astype(float)
+        probs = counts / counts.sum()
         
         if self.criterion == "gini":
             return 1.0 - np.sum(probs ** 2)
-        else:  # entropy
-            # Avoid log(0)
-            probs = probs[probs > 0]
-            return -np.sum(probs * np.log2(probs))
+        else:  
+            ps = probs[probs > 0]
+            return -np.sum(ps * np.log2(ps))
 
-    def _best_split(self, X: np.ndarray, y: np.ndarray, sample_weights: np.ndarray):
+    def _best_split(self, X: np.ndarray, y: np.ndarray):
         n_samples, n_features = X.shape
         
         if n_samples < 2 or len(np.unique(y)) == 1:
             return None, None, 0.0, False
         
-        base_impurity = self._weighted_impurity(y, sample_weights)
+        base_impurity = self._impurity(y)
         best_gain = 0.0
         best_feature = None
         best_threshold = None
         best_is_categorical = False
         
-        # Determine features to try
         if self.max_features is None:
             features_to_try = range(n_features)
         elif self.max_features == "sqrt":
@@ -160,8 +107,6 @@ class DTL(BaseEstimator, ClassifierMixin):
             features_to_try = np.random.choice(n_features, size=n_try, replace=False)
         else:
             features_to_try = range(n_features)
-        
-        total_weight = sample_weights.sum()
         
         for feature in features_to_try:
             values = X[:, feature]
@@ -174,27 +119,20 @@ class DTL(BaseEstimator, ClassifierMixin):
                 
                 for category in unique_vals:
                     left_mask = values == category
-                    right_mask = ~left_mask
-                    
-                    if left_mask.sum() == 0 or right_mask.sum() == 0:
-                        continue
+                    right_mask = values != category
                     
                     y_left = y[left_mask]
                     y_right = y[right_mask]
-                    weights_left = sample_weights[left_mask]
-                    weights_right = sample_weights[right_mask]
                     
-                    weight_left = weights_left.sum()
-                    weight_right = weights_right.sum()
+                    if y_left.size == 0 or y_right.size == 0:
+                        continue
                     
-                    impurity_left = self._weighted_impurity(y_left, weights_left)
-                    impurity_right = self._weighted_impurity(y_right, weights_right)
+                    n_left = y_left.size
+                    n_right = y_right.size
+                    impurity_left = self._impurity(y_left)
+                    impurity_right = self._impurity(y_right)
                     
-                    # Weighted average impurity
-                    weighted_impurity = (
-                        (weight_left / total_weight) * impurity_left + 
-                        (weight_right / total_weight) * impurity_right
-                    )
+                    weighted_impurity = (n_left / n_samples) * impurity_left + (n_right / n_samples) * impurity_right
                     gain = base_impurity - weighted_impurity
                     
                     if gain > best_gain:
@@ -209,14 +147,13 @@ class DTL(BaseEstimator, ClassifierMixin):
                     continue
                 
                 unique_vals = np.unique(numeric_vals)
+                
                 if unique_vals.size < 2:
                     continue
                 
-                # Select thresholds
                 if unique_vals.size > self.max_thresholds:
-                    quantiles = np.linspace(0, 1, self.max_thresholds + 2)[1:-1]
+                    quantiles = np.linspace(0, 1, self.max_thresholds, endpoint=False)[1:]
                     thresholds = np.quantile(numeric_vals, quantiles)
-                    thresholds = np.unique(thresholds)
                 else:
                     thresholds = (unique_vals[:-1] + unique_vals[1:]) / 2.0
                 
@@ -224,24 +161,18 @@ class DTL(BaseEstimator, ClassifierMixin):
                     left_mask = numeric_vals <= threshold
                     right_mask = ~left_mask
                     
-                    if left_mask.sum() == 0 or right_mask.sum() == 0:
-                        continue
-                    
                     y_left = y[left_mask]
                     y_right = y[right_mask]
-                    weights_left = sample_weights[left_mask]
-                    weights_right = sample_weights[right_mask]
                     
-                    weight_left = weights_left.sum()
-                    weight_right = weights_right.sum()
+                    if y_left.size == 0 or y_right.size == 0:
+                        continue
                     
-                    impurity_left = self._weighted_impurity(y_left, weights_left)
-                    impurity_right = self._weighted_impurity(y_right, weights_right)
+                    n_left = y_left.size
+                    n_right = y_right.size
+                    impurity_left = self._impurity(y_left)
+                    impurity_right = self._impurity(y_right)
                     
-                    weighted_impurity = (
-                        (weight_left / total_weight) * impurity_left + 
-                        (weight_right / total_weight) * impurity_right
-                    )
+                    weighted_impurity = (n_left / n_samples) * impurity_left + (n_right / n_samples) * impurity_right
                     gain = base_impurity - weighted_impurity
                     
                     if gain > best_gain:
@@ -252,10 +183,9 @@ class DTL(BaseEstimator, ClassifierMixin):
         
         return best_feature, best_threshold, best_gain, best_is_categorical
 
-    def _build_tree(self, X: np.ndarray, y: np.ndarray, sample_weights: np.ndarray, depth: int) -> _Node:
+    def _build_tree(self, X: np.ndarray, y: np.ndarray, depth: int) -> _Node:
         node = _Node()
         n_samples = y.size
-        node.n_samples = n_samples
         unique_labels = np.unique(y)
         
         stopping = (
@@ -265,21 +195,11 @@ class DTL(BaseEstimator, ClassifierMixin):
         )
         
         if stopping:
-            # Weighted class distribution
-            weighted_counts = np.zeros(self.n_classes_)
-            for class_idx in range(self.n_classes_):
-                mask = (y == class_idx)
-                weighted_counts[class_idx] = sample_weights[mask].sum()
-            
-            total = weighted_counts.sum()
-            if total > 0:
-                node.value = weighted_counts / total
-            else:
-                node.value = np.ones(self.n_classes_) / self.n_classes_
+            counts = np.bincount(y, minlength=self.n_classes_).astype(float)
+            node.value = counts / counts.sum()
             return node
         
         if self.splitter == "random":
-            # Simplified random splitter
             n_features = X.shape[1]
             feat = np.random.randint(0, n_features)
             values = X[:, feat]
@@ -287,11 +207,8 @@ class DTL(BaseEstimator, ClassifierMixin):
             unique_vals = np.unique(values)
             
             if unique_vals.size < 2:
-                weighted_counts = np.zeros(self.n_classes_)
-                for class_idx in range(self.n_classes_):
-                    mask = (y == class_idx)
-                    weighted_counts[class_idx] = sample_weights[mask].sum()
-                node.value = weighted_counts / weighted_counts.sum()
+                counts = np.bincount(y, minlength=self.n_classes_).astype(float)
+                node.value = counts / counts.sum()
                 return node
             
             if is_cat:
@@ -302,44 +219,31 @@ class DTL(BaseEstimator, ClassifierMixin):
                 thr = (unique_vals[np.random.randint(0, len(unique_vals) - 1)] + 
                        unique_vals[np.random.randint(1, len(unique_vals))]) / 2.0
                 best_feature, best_threshold, best_is_categorical = feat, thr, False
-            gain = 0.0
-        else:
-            best_feature, best_threshold, gain, best_is_categorical = self._best_split(X, y, sample_weights)
+        else:  
+            best_feature, best_threshold, gain, best_is_categorical = self._best_split(X, y)
         
-        # Check minimum impurity decrease
-        if best_feature is None or gain < self.min_impurity_decrease:
-            weighted_counts = np.zeros(self.n_classes_)
-            for class_idx in range(self.n_classes_):
-                mask = (y == class_idx)
-                weighted_counts[class_idx] = sample_weights[mask].sum()
-            node.value = weighted_counts / weighted_counts.sum()
+        if best_feature is None:
+            counts = np.bincount(y, minlength=self.n_classes_).astype(float)
+            node.value = counts / counts.sum()
             return node
         
-        # Create split
         if best_is_categorical:
             left_mask = X[:, best_feature] == best_threshold
-            right_mask = ~left_mask
+            right_mask = X[:, best_feature] != best_threshold
         else:
             left_mask = X[:, best_feature].astype(np.float64) <= best_threshold
             right_mask = ~left_mask
         
-        # Check min_samples_leaf
         if left_mask.sum() < self.min_samples_leaf or right_mask.sum() < self.min_samples_leaf:
-            weighted_counts = np.zeros(self.n_classes_)
-            for class_idx in range(self.n_classes_):
-                mask = (y == class_idx)
-                weighted_counts[class_idx] = sample_weights[mask].sum()
-            node.value = weighted_counts / weighted_counts.sum()
+            counts = np.bincount(y, minlength=self.n_classes_).astype(float)
+            node.value = counts / counts.sum()
             return node
-        
-        # Update feature importance
-        self.feature_importances_[best_feature] += gain * sample_weights.sum()
         
         node.feature = best_feature
         node.threshold = best_threshold
         node.is_categorical = best_is_categorical
-        node.left = self._build_tree(X[left_mask], y[left_mask], sample_weights[left_mask], depth + 1)
-        node.right = self._build_tree(X[right_mask], y[right_mask], sample_weights[right_mask], depth + 1)
+        node.left = self._build_tree(X[left_mask], y[left_mask], depth + 1)
+        node.right = self._build_tree(X[right_mask], y[right_mask], depth + 1)
         
         return node
 
