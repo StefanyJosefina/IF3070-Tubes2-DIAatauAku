@@ -38,12 +38,9 @@ class DTL(BaseEstimator, ClassifierMixin):
         self.max_features = max_features
         self.random_state = random_state
         self.max_thresholds = max_thresholds
-        
-        # Internal: menyimpan tipe fitur (numeric atau categorical)
         self._feature_types = None 
 
     def fit(self, X, y):
-        # Konversi X ke numpy array jika pandas DataFrame
         if hasattr(X, 'to_numpy'):
             X_array = X.to_numpy()
             self._feature_types = {}
@@ -53,7 +50,6 @@ class DTL(BaseEstimator, ClassifierMixin):
                 self._feature_types[col_idx] = 'categorical' if is_cat else 'numeric'
         else:
             X_array = np.asarray(X)
-            # Auto-deteksi tipe fitur dari data numpy
             self._feature_types = {}
             for col_idx in range(X_array.shape[1]):
                 col_data = X_array[:, col_idx]
@@ -155,7 +151,6 @@ class DTL(BaseEstimator, ClassifierMixin):
                 if unique_vals.size < 2:
                     continue
                 
-                # OPTIMIZED: Jika banyak unique values, gunakan quantile-based thresholds
                 if unique_vals.size > self.max_thresholds:
                     quantiles = np.linspace(0, 1, self.max_thresholds, endpoint=False)[1:]
                     thresholds = np.quantile(numeric_vals, quantiles)
@@ -252,45 +247,59 @@ class DTL(BaseEstimator, ClassifierMixin):
         
         return node
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        # Konversi X ke numpy array jika pandas DataFrame
+    def _get_node_predictions(self, node: _Node, X: np.ndarray, indices: np.ndarray, results: np.ndarray, mode='class'):
+        if node.value is not None:
+            if mode == 'class':
+                pred_class = self.classes_[np.argmax(node.value)]
+                results[indices] = pred_class
+            else:
+                results[indices] = node.value
+            return
+
+        X_subset = X[indices, node.feature]
+
+        if node.is_categorical:
+            left_mask = X_subset == node.threshold
+            right_mask = ~left_mask
+        else:
+            try:
+                X_numeric = X_subset.astype(np.float64)
+                left_mask = X_numeric <= node.threshold
+            except (ValueError, TypeError):
+                left_mask = np.zeros(X_subset.shape, dtype=bool)
+            
+            right_mask = ~left_mask
+
+        if np.any(left_mask):
+            self._get_node_predictions(node.left, X, indices[left_mask], results, mode)
+        
+        if np.any(right_mask):
+            self._get_node_predictions(node.right, X, indices[right_mask], results, mode)
+
+    def predict(self, X: np.ndarray, threshold: dict = None) -> np.ndarray:
         if hasattr(X, 'to_numpy'):
             X = X.to_numpy()
         else:
             X = np.asarray(X)
         
-        predictions = []
+        n_samples = X.shape[0]
+        proba = np.empty((n_samples, self.n_classes_), dtype=np.float64)
         
-        for sample in X:
-            node = self._tree
-            while node.value is None:
-                feature_value = sample[node.feature]
+        self._get_node_predictions(self._tree, X, np.arange(n_samples), proba, mode='proba')
+        
+        if threshold is None:
+            class_indices = np.argmax(proba, axis=1)
+            return self.classes_[class_indices]
+        
+        final_predictions = self.classes_[np.argmax(proba, axis=1)]
+        
+        for cls_label, thr in threshold.items():
+            if cls_label in self.classes_:
+                cls_idx = np.where(self.classes_ == cls_label)[0][0]
+                mask = proba[:, cls_idx] >= thr
+                final_predictions[mask] = cls_label
                 
-                if node.is_categorical:
-                    # Fitur kategorik: compare equality
-                    if feature_value == node.threshold:
-                        node = node.left
-                    else:
-                        node = node.right
-                else:
-                    # Fitur numerik: compare dengan threshold
-                    try:
-                        numeric_value = float(feature_value)
-                    except (ValueError, TypeError):
-                        # Jika tidak bisa convert ke numeric, ambil right child
-                        node = node.right
-                        continue
-                    
-                    if numeric_value <= node.threshold:
-                        node = node.left
-                    else:
-                        node = node.right
-            
-            # Ambil kelas dengan probabilitas tertinggi
-            class_idx = np.argmax(node.value)
-            predictions.append(self.classes_[class_idx])
-        
-        return np.array(predictions)
+        return final_predictions
 
     def predict_proba(self, X):
         if hasattr(X, 'to_numpy'):
@@ -298,33 +307,12 @@ class DTL(BaseEstimator, ClassifierMixin):
         else:
             X = np.asarray(X)
         
-        proba = []
+        n_samples = X.shape[0]
+        proba = np.empty((n_samples, self.n_classes_), dtype=np.float64)
         
-        for sample in X:
-            node = self._tree
-            while node.value is None:
-                feature_value = sample[node.feature]
-                
-                if node.is_categorical:
-                    if feature_value == node.threshold:
-                        node = node.left
-                    else:
-                        node = node.right
-                else:
-                    try:
-                        numeric_value = float(feature_value)
-                    except (ValueError, TypeError):
-                        node = node.right
-                        continue
-                    
-                    if numeric_value <= node.threshold:
-                        node = node.left
-                    else:
-                        node = node.right
-            
-            proba.append(node.value)
+        self._get_node_predictions(self._tree, X, np.arange(n_samples), proba, mode='proba')
         
-        return np.vstack(proba)
+        return proba
 
 
 __all__ = ["DTL"]
